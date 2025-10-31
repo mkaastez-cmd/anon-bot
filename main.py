@@ -31,8 +31,7 @@ waiting_users = []      # FIFO queue of waiting user_ids
 active_chats = {}       # user_id -> partner_id
 
 # ======= Bot token (REPLACE this with your token or use env in Render) =======
-BOT_TOKEN = os.environ.get("7996920244:AAHgItacKJBawOCjo5sTq9RvB6fjz3FLcZ4") or "YOUR_BOT_TOKEN_HERE"
-
+BOT_TOKEN = os.environ.get("7996920244:AAHgItacKJBawOCjo5sTq9RvB6fjz3FLcZ4")
 # ======= Helper utilities =======
 def pair_users(u1, u2):
     active_chats[u1] = u2
