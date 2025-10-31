@@ -1,124 +1,193 @@
-
+# main.py
+import os
 import logging
-logging.getLogger().setLevel(logging.ERROR)
-logging.getLogger("httpx").setLevel(logging.ERROR)
-logging.getLogger("telegram").setLevel(logging.ERROR)
-logging.getLogger("telegram.ext").setLevel(logging.ERROR)
+import asyncio
+from threading import Thread
+from flask import Flask, Response
 from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
-import nest_asyncio
-import logging
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    MessageHandler,
+    ContextTypes,
+    filters,
+)
 
-# Reduce log noise
-logging.basicConfig(level=logging.WARNING)
+# ======= Minimal logging (avoid huge logs) =======
+logging.getLogger().setLevel(logging.ERROR)
+logging.getLogger("telegram").setLevel(logging.ERROR)
+logging.getLogger("httpx").setLevel(logging.ERROR)
 
-# Fix event loop issue on servers
-nest_asyncio.apply()
+# ======= Flask health endpoint (for cron / keepalive) =======
+flask_app = Flask(__name__)
 
-# Logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-# Your Bot Token (replace this with your real token)
-BOT_TOKEN = "7996920244:AAHgItacKJBawOCjo5sTq9RvB6fjz3FLcZ4"
-
-# User pairing data
-waiting_users = []
-active_chats = {}
-
-# Start command
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if user_id in active_chats:
-        await update.message.reply_text("You are already chatting. Type /stop to end the chat.")
-        return
-
-    if user_id in waiting_users:
-        await update.message.reply_text("You are already in queue. Please wait for a partner.")
-        return
-
-    if waiting_users:
-        partner_id = waiting_users.pop(0)
-        active_chats[user_id] = partner_id
-        active_chats[partner_id] = user_id
-        await context.bot.send_message(chat_id=user_id, text="🎯 Partner found! Say hi 👋")
-        await context.bot.send_message(chat_id=partner_id, text="🎯 Partner found! Say hi 👋")
-    else:
-        waiting_users.append(user_id)
-        await update.message.reply_text("⏳ Waiting for a partner... Please wait.")
-
-# Stop command
-async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if user_id in active_chats:
-        partner_id = active_chats[user_id]
-        await context.bot.send_message(chat_id=partner_id, text="❌ Your partner left the chat.")
-        await context.bot.send_message(chat_id=user_id, text="✅ You left the chat.")
-        del active_chats[partner_id]
-        del active_chats[user_id]
-    elif user_id in waiting_users:
-        waiting_users.remove(user_id)
-        await update.message.reply_text("❌ You left the waiting queue.")
-    else:
-        await update.message.reply_text("You are not chatting with anyone currently.")
-
-# Skip command (find new partner)
-async def skip(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if user_id in active_chats:
-        partner_id = active_chats[user_id]
-        await context.bot.send_message(chat_id=partner_id, text="⚠️ Your partner skipped to someone else.")
-        del active_chats[partner_id]
-        del active_chats[user_id]
-        waiting_users.append(user_id)
-        await update.message.reply_text("🔄 Searching for a new partner...")
-        await start(update, context)
-    else:
-        await update.message.reply_text("You're not in a chat. Type /start to begin.")
-
-# Forward messages between users
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if user_id in active_chats:
-        partner_id = active_chats[user_id]
-        # Forward text
-        if update.message.text:
-            await context.bot.send_message(chat_id=partner_id, text=update.message.text)
-        # Forward photos, stickers, etc.
-        elif update.message.sticker:
-            await context.bot.send_sticker(chat_id=partner_id, sticker=update.message.sticker.file_id)
-        elif update.message.photo:
-            await context.bot.send_photo(chat_id=partner_id, photo=update.message.photo[-1].file_id)
-        elif update.message.video:
-            await context.bot.send_video(chat_id=partner_id, video=update.message.video.file_id)
-        elif update.message.voice:
-            await context.bot.send_voice(chat_id=partner_id, voice=update.message.voice.file_id)
-        elif update.message.document:
-            await context.bot.send_document(chat_id=partner_id, document=update.message.document.file_id)
-    else:
-        await update.message.reply_text("⚠️ You are not chatting right now. Type /start to find a partner.")
-
-# Main function
-async def main():
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
-
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("stop", stop))
-    app.add_handler(CommandHandler("skip", skip))
-    app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_message))
-
-    logger.info("Bot started")
-    await app.run_polling()
-
-if __name__ == "__main__":
-    import asyncio
-    asyncio.run(main())
-    from flask import Flask
-app = Flask(__name__)
-
-@app.route('/')
+@flask_app.route("/")
 def home():
-    return "OK"
+    # extremely small response so cron won't complain
+    return Response("OK", mimetype="text/plain")
 
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=10000)
+# ======= Bot data stores =======
+waiting_users = []      # FIFO queue of waiting user_ids
+active_chats = {}       # user_id -> partner_id
+
+# ======= Bot token (REPLACE this with your token or use env in Render) =======
+BOT_TOKEN = os.environ.get("BOT_TOKEN") or "YOUR_BOT_TOKEN_HERE"
+
+# ======= Helper utilities =======
+def pair_users(u1, u2):
+    active_chats[u1] = u2
+    active_chats[u2] = u1
+
+def unpair_user(u):
+    partner = active_chats.pop(u, None)
+    if partner:
+        active_chats.pop(partner, None)
+    return partner
+
+# ======= Command handlers =======
+async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = (
+        "👋 *Welcome to Anonymous Chat!* \n\n"
+        "Commands:\n"
+        "/find — Find a random partner 🔎\n"
+        "/next — Skip current partner ⏭️\n"
+        "/stop — End chat 🚪\n\n"
+        "You can send text, photos, stickers, voice, video, or files."
+    )
+    await update.message.reply_text(text, parse_mode="Markdown")
+
+async def find_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user.id
+
+    # already chatting?
+    if user in active_chats:
+        await update.message.reply_text("❗ You are already chatting. Use /next to skip or /stop to end.")
+        return
+
+    # already waiting?
+    if user in waiting_users:
+        await update.message.reply_text("➡️ You're already in the queue. Please wait...")
+        return
+
+    # match with first waiting user if any
+    if waiting_users:
+        partner = waiting_users.pop(0)
+        if partner == user:
+            # shouldn't happen but guard
+            waiting_users.append(user)
+            await update.message.reply_text("🔎 Waiting for a partner...")
+            return
+        pair_users(user, partner)
+        await context.bot.send_message(chat_id=partner, text="🎯 Partner found! Say hi 👋")
+        await update.message.reply_text("🎯 Partner found! Say hi 👋")
+    else:
+        waiting_users.append(user)
+        await update.message.reply_text("🔎 Searching for a partner... Please wait ⏳")
+
+async def next_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user.id
+
+    if user not in active_chats:
+        await update.message.reply_text("⚠ You're not chatting. Use /find to start.")
+        return
+
+    partner = unpair_user(user)
+    if partner:
+        await context.bot.send_message(chat_id=partner, text="⚠️ Your partner skipped you. Use /find to get a new one.")
+    await update.message.reply_text("🔄 Looking for a new partner...")
+    # put user back into queue and attempt immediate match
+    if waiting_users:
+        new_partner = waiting_users.pop(0)
+        if new_partner != user:
+            pair_users(user, new_partner)
+            await context.bot.send_message(chat_id=new_partner, text="🎯 Partner found! Say hi 👋")
+            await update.message.reply_text("🎯 Partner found! Say hi 👋")
+            return
+        else:
+            # unexpected, put back
+            waiting_users.append(user)
+            await update.message.reply_text("⏳ Waiting for a partner...")
+            return
+    else:
+        waiting_users.append(user)
+        await update.message.reply_text("⏳ Waiting for a partner...")
+
+async def stop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user.id
+    if user in waiting_users:
+        waiting_users.remove(user)
+        await update.message.reply_text("🛑 You left the waiting queue.")
+        return
+
+    if user in active_chats:
+        partner = unpair_user(user)
+        if partner:
+            await context.bot.send_message(chat_id=partner, text="❌ Your partner ended the chat.")
+        await update.message.reply_text("✅ You ended the chat.")
+    else:
+        await update.message.reply_text("ℹ You are not in a chat right now.")
+
+# ======= Message forwarding (text, stickers, photos, video, voice, audio, docs) =======
+async def relay(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user.id
+    if user not in active_chats:
+        await update.message.reply_text("⚠ You are not chatting. Use /find to start.")
+        return
+
+    partner = active_chats[user]
+    msg = update.message
+
+    try:
+        if msg.text:
+            await context.bot.send_message(chat_id=partner, text=msg.text)
+        elif msg.sticker:
+            await context.bot.send_sticker(chat_id=partner, sticker=msg.sticker.file_id)
+        elif msg.photo:
+            await context.bot.send_photo(chat_id=partner, photo=msg.photo[-1].file_id, caption=msg.caption or "")
+        elif msg.video:
+            await context.bot.send_video(chat_id=partner, video=msg.video.file_id, caption=msg.caption or "")
+        elif msg.voice:
+            await context.bot.send_voice(chat_id=partner, voice=msg.voice.file_id)
+        elif msg.audio:
+            await context.bot.send_audio(chat_id=partner, audio=msg.audio.file_id, caption=msg.caption or "")
+        elif msg.document:
+            await context.bot.send_document(chat_id=partner, document=msg.document.file_id, caption=msg.caption or "")
+        else:
+            # fallback: try copy_message if available
+            try:
+                await context.bot.copy_message(chat_id=partner, from_chat_id=user, message_id=msg.message_id)
+            except Exception:
+                await update.message.reply_text("⚠ Unsupported message type.")
+    except Exception:
+        # If sending to partner fails, unpair and inform sender
+        unpair_user(user)
+        await update.message.reply_text("⚠️ Failed to deliver. Chat ended.")
+
+# ======= Run bot (async) =======
+async def run_bot():
+    application = ApplicationBuilder().token(BOT_TOKEN).build()
+
+    application.add_handler(CommandHandler("start", start_cmd))
+    application.add_handler(CommandHandler("find", find_cmd))
+    application.add_handler(CommandHandler("next", next_cmd))
+    application.add_handler(CommandHandler("stop", stop_cmd))
+    # relay everything except commands
+    application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, relay))
+
+    # start polling (async)
+    await application.run_polling()
+
+# ======= Entry point for Render =======
+if __name__ == "__main__":
+    # start bot in background thread
+    def _start_bot_thread():
+        asyncio.run(run_bot())
+
+    t = Thread(target=_start_bot_thread, daemon=True)
+    t.start()
+
+    # run flask on port Render gives (default 10000)
+    port = int(os.environ.get("PORT", 10000))
+    # ensure no noisy logging from Flask
+    logging.getLogger("werkzeug").setLevel(logging.ERROR)
+    flask_app.run(host="0.0.0.0", port=port)
