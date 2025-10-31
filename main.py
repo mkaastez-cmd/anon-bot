@@ -2,6 +2,10 @@ import logging
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 import nest_asyncio
+import logging
+
+# Reduce log noise
+logging.basicConfig(level=logging.WARNING)
 
 # Fix event loop issue on servers
 nest_asyncio.apply()
