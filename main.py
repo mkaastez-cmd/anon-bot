@@ -5,7 +5,7 @@ from flask import Flask, request
 
 logging.basicConfig(level=logging.INFO)
 
-BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"
+BOT_TOKEN = "7996920244:AAHgItacKJBawOCjo5sTq9RvB6fjz3FLcZ4"
 
 app = Flask(__name__)
 
