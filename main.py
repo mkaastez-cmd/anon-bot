@@ -1,4 +1,9 @@
+
 import logging
+logging.getLogger().setLevel(logging.ERROR)
+logging.getLogger("httpx").setLevel(logging.ERROR)
+logging.getLogger("telegram").setLevel(logging.ERROR)
+logging.getLogger("telegram.ext").setLevel(logging.ERROR)
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 import nest_asyncio
