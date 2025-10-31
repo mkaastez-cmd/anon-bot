@@ -1,4 +1,4 @@
-import logging
+apppport logging
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 import nest_asyncio
@@ -105,15 +105,15 @@ if __name__ == "__main__":
     import asyncio
     asyncio.run(main()
 from flask import Flask
-from threading import Thread
-
-app = Flask('')
+from threading import Threadap
+app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "✅ Bot is alive!"
+    return "✅ Bot is alive and running on Render!"
 
 def run():
-    app.run(host='0.0.0.0', port=8080)
+    port = int(os.environ.get("PORT", 5000))  # Render assigns a port automatically
+    app.run(host='0.0.0.0', port=port)
 
 Thread(target=run).start())
