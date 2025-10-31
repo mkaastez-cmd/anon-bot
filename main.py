@@ -1,4 +1,4 @@
-apppport logging
+import logging
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 import nest_asyncio
@@ -12,6 +12,18 @@ logger = logging.getLogger(__name__)
 
 # Your Bot Token (replace this with your real token)
 BOT_TOKEN = "7996920244:AAHgItacKJBawOCjo5sTq9RvB6fjz3FLcZ4"
+# port
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "✅ Bot is alive and running on Render!"
+
+def run():
+    port = int(os.environ.get("PORT", 5000))  # Render assigns a port automatically
+    app.run(host='0.0.0.0', port=port)
+
+Thread(target=run).start()
 
 # User pairing data
 waiting_users = []
@@ -103,17 +115,5 @@ async def main():
 
 if __name__ == "__main__":
     import asyncio
-    asyncio.run(main()
-from flask import Flask
-from threading import Threadap
-app = Flask(__name__)
-
-@app.route('/')
-def home():
-    return "✅ Bot is alive and running on Render!"
-
-def run():
-    port = int(os.environ.get("PORT", 5000))  # Render assigns a port automatically
-    app.run(host='0.0.0.0', port=port)
-
-Thread(target=run).start())
+    asyncio.run(main())
+    
