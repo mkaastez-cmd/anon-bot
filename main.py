@@ -1,100 +1,106 @@
 import logging
-import nest_asyncio
-from flask import Flask, request
 from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
+import nest_asyncio
 
-# --- Apply asyncio patch (needed for mobile/Pydroid) ---
+# Fix event loop issue on servers
 nest_asyncio.apply()
 
-# --- Logging ---
+# Logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# --- Flask app ---
-app = Flask(__name__)
-
-# === Replace this with your real Telegram bot token ===
+# Your Bot Token (replace this with your real token)
 BOT_TOKEN = "7996920244:AAHgItacKJBawOCjo5sTq9RvB6fjz3FLcZ4"
 
-# --- Telegram Bot setup ---
-application = ApplicationBuilder().token(BOT_TOKEN).build()
-
-# Store active chat pairs
+# User pairing data
+waiting_users = []
 active_chats = {}
 
-# --- Commands ---
+# Start command
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    await update.message.reply_text("👋 Welcome to Anonymous Chat!\nType /next to find someone new 🔍")
-
-async def next_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-
-    # Try to find a partner
-    for partner_id in list(active_chats.keys()):
-        if active_chats[partner_id] is None and partner_id != user_id:
-            active_chats[user_id] = partner_id
-            active_chats[partner_id] = user_id
-
-            await context.bot.send_message(chat_id=user_id, text="✅ Partner found! Start chatting 💬")
-            await context.bot.send_message(chat_id=partner_id, text="✅ Partner found! Start chatting 💬")
-            return
-
-    active_chats[user_id] = None
-    await update.message.reply_text("⏳ Waiting for a partner...")
-
-async def stop_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    partner_id = active_chats.get(user_id)
-
-    if partner_id:
-        await context.bot.send_message(chat_id=partner_id, text="❌ Your partner left the chat.")
-        active_chats[partner_id] = None
-    active_chats[user_id] = None
-    await update.message.reply_text("❌ You left the chat.")
-
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    partner_id = active_chats.get(user_id)
-
-    if not partner_id:
-        await update.message.reply_text("⚠️ You're not chatting with anyone. Type /next to start.")
+    if user_id in active_chats:
+        await update.message.reply_text("You are already chatting. Type /stop to end the chat.")
         return
 
-    # Forward text, media, stickers, voice, etc.
-    if update.message.text:
-        await context.bot.send_message(chat_id=partner_id, text=update.message.text)
-    elif update.message.sticker:
-        await context.bot.send_sticker(chat_id=partner_id, sticker=update.message.sticker.file_id)
-    elif update.message.photo:
-        await context.bot.send_photo(chat_id=partner_id, photo=update.message.photo[-1].file_id)
-    elif update.message.video:
-        await context.bot.send_video(chat_id=partner_id, video=update.message.video.file_id)
-    elif update.message.voice:
-        await context.bot.send_voice(chat_id=partner_id, voice=update.message.voice.file_id)
+    if user_id in waiting_users:
+        await update.message.reply_text("You are already in queue. Please wait for a partner.")
+        return
+
+    if waiting_users:
+        partner_id = waiting_users.pop(0)
+        active_chats[user_id] = partner_id
+        active_chats[partner_id] = user_id
+        await context.bot.send_message(chat_id=user_id, text="🎯 Partner found! Say hi 👋")
+        await context.bot.send_message(chat_id=partner_id, text="🎯 Partner found! Say hi 👋")
     else:
-        await update.message.reply_text("⚠️ Unsupported message type.")
+        waiting_users.append(user_id)
+        await update.message.reply_text("⏳ Waiting for a partner... Please wait.")
 
-# --- Handlers ---
-application.add_handler(CommandHandler("start", start))
-application.add_handler(CommandHandler("next", next_chat))
-application.add_handler(CommandHandler("stop", stop_chat))
-application.add_handler(MessageHandler(filters.ALL, handle_message))
+# Stop command
+async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if user_id in active_chats:
+        partner_id = active_chats[user_id]
+        await context.bot.send_message(chat_id=partner_id, text="❌ Your partner left the chat.")
+        await context.bot.send_message(chat_id=user_id, text="✅ You left the chat.")
+        del active_chats[partner_id]
+        del active_chats[user_id]
+    elif user_id in waiting_users:
+        waiting_users.remove(user_id)
+        await update.message.reply_text("❌ You left the waiting queue.")
+    else:
+        await update.message.reply_text("You are not chatting with anyone currently.")
 
-# --- Flask route for keep-alive (Render Cron) ---
-@app.route('/')
-def home():
-    return "✅ Bot is running!"
+# Skip command (find new partner)
+async def skip(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if user_id in active_chats:
+        partner_id = active_chats[user_id]
+        await context.bot.send_message(chat_id=partner_id, text="⚠️ Your partner skipped to someone else.")
+        del active_chats[partner_id]
+        del active_chats[user_id]
+        waiting_users.append(user_id)
+        await update.message.reply_text("🔄 Searching for a new partner...")
+        await start(update, context)
+    else:
+        await update.message.reply_text("You're not in a chat. Type /start to begin.")
 
-# --- Run both Flask and Telegram app together ---
-import threading
+# Forward messages between users
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if user_id in active_chats:
+        partner_id = active_chats[user_id]
+        # Forward text
+        if update.message.text:
+            await context.bot.send_message(chat_id=partner_id, text=update.message.text)
+        # Forward photos, stickers, etc.
+        elif update.message.sticker:
+            await context.bot.send_sticker(chat_id=partner_id, sticker=update.message.sticker.file_id)
+        elif update.message.photo:
+            await context.bot.send_photo(chat_id=partner_id, photo=update.message.photo[-1].file_id)
+        elif update.message.video:
+            await context.bot.send_video(chat_id=partner_id, video=update.message.video.file_id)
+        elif update.message.voice:
+            await context.bot.send_voice(chat_id=partner_id, voice=update.message.voice.file_id)
+        elif update.message.document:
+            await context.bot.send_document(chat_id=partner_id, document=update.message.document.file_id)
+    else:
+        await update.message.reply_text("⚠️ You are not chatting right now. Type /start to find a partner.")
 
-def run_flask():
-    app.run(host="0.0.0.0", port=10000)
+# Main function
+async def main():
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-threading.Thread(target=run_flask).start()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("stop", stop))
+    app.add_handler(CommandHandler("skip", skip))
+    app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_message))
 
-if __name__ == '__main__':
-    logger.info("🚀 Bot started successfully!")
-    application.run_polling()
+    logger.info("Bot started")
+    await app.run_polling()
+
+if __name__ == "__main__":
+    import asyncio
+    asyncio.run(main())
