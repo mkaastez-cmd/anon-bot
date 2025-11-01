@@ -51,8 +51,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         partner_id = waiting_users.pop(0)
         active_chats[user_id] = partner_id
         active_chats[partner_id] = user_id
-        await context.bot.send_message(chat_id=user_id, text="🎯 Partner found! Say hi 👋")
-        await context.bot.send_message(chat_id=partner_id, text="🎯 Partner found! Say hi 👋")
+        await context.bot.send_message(chat_id=user_id, text="🎯 Partner found! Say hi 👋 /stop to end the chat")
+        await context.bot.send_message(chat_id=partner_id, text="🎯 Partner found! Say hi 👋 /stop to end the chat")
     else:
         waiting_users.append(user_id)
         await update.message.reply_text("⏳ Waiting for a partner... Please wait.")
@@ -62,14 +62,14 @@ async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user_id in active_chats:
         partner_id = active_chats[user_id]
         await context.bot.send_message(chat_id=partner_id, text="❌ Your partner left the chat.")
-        await update.message.reply_text("✅ You left the chat.")
+        await update.message.reply_text("✅ You left the chat. /start to find new partner")
         del active_chats[partner_id]
         del active_chats[user_id]
     elif user_id in waiting_users:
         waiting_users.remove(user_id)
         await update.message.reply_text("❌ You left the waiting queue.")
     else:
-        await update.message.reply_text("You're not chatting with anyone right now.")
+        await update.message.reply_text("You're not chatting with anyone right now. /start new chat")
 
 async def skip(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
